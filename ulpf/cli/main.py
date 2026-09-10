@@ -11,6 +11,7 @@ Commands:
 * ``ulpf verify …``       — prove ledger integrity and the lossless round-trip.
 * ``ulpf reprocess``      — replay bronze evidence through the current parser.
 * ``ulpf dlq …``          — inspect and recover from the dead-letter queue.
+* ``ulpf suggest-parser`` — draft a source YAML from unmapped sample lines.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from ulpf.cli.inspect import inspect as _inspect_command
 from ulpf.cli.keys import keys_app
 from ulpf.cli.reprocess import reprocess as _reprocess_command
 from ulpf.cli.sources import sources_app
+from ulpf.cli.suggest_parser import suggest_parser as _suggest_parser_command
 from ulpf.cli.verify import verify_app
 from ulpf.config.settings import Settings, get_settings
 from ulpf.core.logging import configure_logging
@@ -61,6 +63,7 @@ app.add_typer(config_app, name="config")
 app.command("inspect")(_inspect_command)
 app.command("compact")(_compact_command)
 app.command("reprocess")(_reprocess_command)
+app.command("suggest-parser")(_suggest_parser_command)
 app.add_typer(sources_app, name="sources")
 app.add_typer(keys_app, name="keys")
 app.add_typer(verify_app, name="verify")

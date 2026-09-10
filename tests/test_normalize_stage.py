@@ -90,7 +90,13 @@ def _registry(tmp_path: Path, *definitions: dict[str, Any]) -> SourceRegistry:
 
 
 def _settings(tmp_path: Path) -> Settings:
-    return Settings(storage=StorageSettings(dlq_path=tmp_path / "dlq", bronze_path=tmp_path / "b"))
+    return Settings(
+        storage=StorageSettings(
+            dlq_path=tmp_path / "dlq",
+            bronze_path=tmp_path / "b",
+            state_path=tmp_path / "state",
+        )
+    )
 
 
 def _parsed(raw_bytes: bytes, fields: dict[str, Any]) -> ParsedEvent:
@@ -125,7 +131,9 @@ async def test_matched_source_produces_a_normalized_ocsf_event(tmp_path: Path) -
     assert snapshot()[key] - before == 1.0
 
 
-async def test_no_source_match_passes_through_as_unknown_without_dlq(tmp_path: Path) -> None:
+async def test_no_source_match_produces_a_template_only_skeleton_without_dlq(
+    tmp_path: Path,
+) -> None:
     settings = _settings(tmp_path)
     stage = NormalizeStage(settings, _registry(tmp_path, _full_source()))
     # raw text has no "devname=" -> nothing matches
@@ -134,10 +142,17 @@ async def test_no_source_match_passes_through_as_unknown_without_dlq(tmp_path: P
     result = await stage.process(event)
 
     assert isinstance(result, NormalizedEvent)
-    assert result.source_type == "unknown"
+    assert result.source_type.startswith("unknown:")  # "unknown:<template_id>"
     assert result.mapping_version == "none"
-    assert result.ocsf["unmapped"] == {"a": "1", "b": "2"}
-    assert result.ocsf["metadata"]["uid"] == event.event_uid
+    # a real OCSF 4001 skeleton, not a bare stub
+    assert result.ocsf["class_uid"] == 4001 and result.ocsf["category_uid"] == 4
+    assert result.ocsf["class_name"] == "Network Activity"
+    assert isinstance(result.ocsf["time"], int)
+    assert result.ocsf["metadata"]["uid"] == event.event_uid  # requirement (d)
+    assert result.ocsf["metadata"]["log_hash"] == event.raw_hash
+    assert result.ocsf["unmapped"] == {"a": "1", "b": "2"}  # every extracted field, verbatim
+    assert result.ocsf["enrichments"]["parse_status"] == "template_only"
+    assert result.enrichment["parse_status"] == "template_only"
     assert DeadLetterQueue(settings).stats()["total"] == 0  # not dead-lettered
 
 

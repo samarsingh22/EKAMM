@@ -41,7 +41,9 @@ _FORTI_LINE = (
 
 def _settings(tmp_path: Path) -> Settings:
     return Settings(
-        storage=StorageSettings(dlq_path=tmp_path / "dlq", bronze_path=tmp_path / "b"),
+        storage=StorageSettings(
+            dlq_path=tmp_path / "dlq", bronze_path=tmp_path / "b", state_path=tmp_path / "state"
+        ),
         enrich=EnrichSettings(geoip=False),
     )
 

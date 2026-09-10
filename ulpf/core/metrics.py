@@ -95,6 +95,22 @@ SINK_LATENCY = Histogram(
     "Wall-clock time for one sink to write one normalized event.",
     ["sink"],
 )
+TEMPLATES_TOTAL = Gauge(
+    "ulpf_templates_total",
+    "Distinct Drain3 log-line templates currently known, per source.",
+    ["source_id"],
+)
+TEMPLATE_EVENTS = Counter(
+    "ulpf_template_events_total",
+    "Lines recorded against a mined template.",
+    ["template_id"],
+)
+UNKNOWN_EVENTS = Counter(
+    "ulpf_unknown_events_total",
+    "Events that matched no source definition and were emitted as a template-only "
+    "OCSF skeleton (never dropped).",
+    ["template_id"],
+)
 
 _ALL_METRICS = (
     EVENTS_RECEIVED,
@@ -114,6 +130,9 @@ _ALL_METRICS = (
     INTEGRITY_BATCH_SEAL_SECONDS,
     SINK_WRITES,
     SINK_LATENCY,
+    TEMPLATES_TOTAL,
+    TEMPLATE_EVENTS,
+    UNKNOWN_EVENTS,
 )
 
 

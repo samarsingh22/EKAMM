@@ -7,9 +7,24 @@ validated.
 :class:`NormalizeStage` (after :class:`~ulpf.core.pipeline.ParseStage`):
 
 1. :meth:`~ulpf.parse.dsl.loader.SourceRegistry.match` finds the source
-   definition. No match -> the event is passed through as
-   ``source_type="unknown"`` (``ParseStage``'s sniff-based fields kept for
-   Drain3) — **not** dead-lettered.
+   definition. **No match -> the event is still normalized**, into a
+   *template-only* OCSF skeleton (:meth:`NormalizeStage._template_only`), not
+   dead-lettered and not dropped:
+
+   * the raw line is run through :class:`~ulpf.parse.templates.TemplateMiner`
+     to get a stable ``template_id`` for its shape;
+   * a minimal OCSF ``class_uid=4001`` record is built from only what is safe
+     to infer — ``time`` (from the syslog envelope if present, else the
+     ingest time), ``metadata``, and **every** extracted field verbatim under
+     ``unmapped``;
+   * ``source_type`` becomes ``"unknown:<template_id>"`` and
+     ``enrichments.parse_status = "template_only"`` marks it;
+   * the shape is recorded to :class:`~ulpf.parse.templates.TemplateStore` and
+     ``ulpf_unknown_events_total{template_id}`` is incremented.
+
+   So a source nobody has written a YAML for still produces queryable
+   structure and a traceable record — it becomes a *candidate for
+   auto-generated parsing*, not a lost event.
 2. Once matched, :func:`~ulpf.parse.coordinator.parse_for_definition`
    re-parses the RAW bytes with that definition's own declared engine and
    options — the authoritative parse; ``ParseStage``'s sniff-based fields are
@@ -32,7 +47,8 @@ validated.
 * an invalid record whose source definition says ``on_failure: dead_letter`` is
   dead-lettered (``stage="validate"``) and dropped — the original bytes remain
   in bronze under ``raw_hash``; ``on_failure: warn`` logs and emits it anyway;
-* pass-through (``source_type="unknown"``) records are not validated.
+* template-only (``source_type`` starting ``"unknown:"``) records are not
+  validated — there is no source policy to validate them against.
 """
 
 from __future__ import annotations
@@ -42,20 +58,23 @@ from typing import Any
 
 from ulpf.config.settings import Settings
 from ulpf.core.errors import MappingError, ParseError
-from ulpf.core.metrics import EVENTS_NORMALIZED
+from ulpf.core.metrics import EVENTS_NORMALIZED, UNKNOWN_EVENTS
 from ulpf.core.models import NormalizedEvent, ParsedEvent, RawEvent
 from ulpf.core.pipeline import Event
+from ulpf.core.timeutil import parse_timestamp
 from ulpf.normalize.mapper import Mapper
-from ulpf.normalize.ocsf.base import finalize
+from ulpf.normalize.ocsf.base import OCSF_VERSION, finalize
 from ulpf.normalize.validator import OcsfValidator
 from ulpf.parse.coordinator import parse_for_definition
 from ulpf.parse.dsl.loader import SourceRegistry
 from ulpf.parse.dsl.schema import SourceDefinition
+from ulpf.parse.templates import TemplateMinerRegistry, TemplateStore
 from ulpf.sinks.dlq import DeadLetterQueue
 
 _log = logging.getLogger(__name__)
 
 _UNKNOWN = "unknown"
+_TEMPLATE_ONLY_PREFIX = "unknown:"
 
 
 class NormalizeStage:
@@ -64,19 +83,32 @@ class NormalizeStage:
     name = "normalize"
 
     def __init__(
-        self, settings: Settings, registry: SourceRegistry, *, mapper: Mapper | None = None
+        self,
+        settings: Settings,
+        registry: SourceRegistry,
+        *,
+        mapper: Mapper | None = None,
+        miners: TemplateMinerRegistry | None = None,
+        template_store: TemplateStore | None = None,
     ) -> None:
-        """Wire the source registry, mapper, and a dead-letter queue."""
+        """Wire the source registry, mapper, DLQ, and the template miner/store.
+
+        ``miners``/``template_store`` are injectable for tests; by default they
+        are built from ``settings`` (both are cheap to construct and do no I/O
+        until an unmatched line actually needs them).
+        """
         self._registry = registry
         self._mapper = mapper or Mapper()
         self._dlq = DeadLetterQueue(settings)
+        self._miners = miners or TemplateMinerRegistry(settings)
+        self._template_store = template_store or TemplateStore(settings)
 
     async def process(self, event: Event) -> NormalizedEvent | None:
         """Normalize one event; ``None`` if a parse or mapping failure dead-lettered it."""
         assert isinstance(event, ParsedEvent)
         definition = self._registry.match(event)
         if definition is None:
-            return self._passthrough(event)
+            return self._template_only(event)
 
         try:
             fields = parse_for_definition(event.raw, definition)
@@ -167,19 +199,48 @@ class NormalizeStage:
             },
         )
 
-    def _passthrough(self, event: ParsedEvent) -> NormalizedEvent:
-        """No source matched: keep the fields (for Drain3 later), never dead-letter."""
+    def _template_only(self, event: ParsedEvent) -> NormalizedEvent:
+        """No source matched: mine the shape, emit a template-only OCSF skeleton.
+
+        The event is never dropped or dead-lettered. It becomes a candidate for
+        an auto-generated source definition: its shape is mined to a stable
+        ``template_id``, a minimal ``class_uid=4001`` record is built from only
+        what is safe to infer (time + metadata + every extracted field under
+        ``unmapped``), and the shape is recorded to the template store.
+        """
+        line = _line_for_mining(event)
+        mined = self._miners.get(event.source_id).mine(line)
+        template_id = str(mined["template_id"])
+        self._template_store.record(template_id, mined["template"], event.source_id, line)
+        UNKNOWN_EVENTS.labels(template_id=template_id).inc()
+
+        source_type = f"{_TEMPLATE_ONLY_PREFIX}{template_id}"
+        enrichments = {"parse_status": "template_only", "template_id": template_id}
+        ocsf = finalize(
+            {
+                "class_uid": 4001,
+                "category_uid": 4,
+                "time": _infer_time_ns(event),
+                "metadata": {
+                    "uid": event.event_uid,
+                    "log_hash": event.raw_hash,  # requirement (d)
+                    "version": OCSF_VERSION,
+                },
+                "unmapped": dict(event.fields),
+                "enrichments": enrichments,
+            }
+        )
         return NormalizedEvent(
             event_uid=event.event_uid,
             raw_hash=event.raw_hash,
             ingest_time_ns=event.ingest_time_ns,
-            ocsf={
-                "metadata": {"uid": event.event_uid, "log_hash": event.raw_hash},
-                "unmapped": dict(event.fields),
-            },
-            source_type=_UNKNOWN,
+            ocsf=ocsf,
+            source_type=source_type,
             mapping_version="none",
-            enrichment={"needs_template_mining": event.needs_template_mining},
+            enrichment={
+                **enrichments,
+                "needs_template_mining": event.needs_template_mining,
+            },
         )
 
 
@@ -203,8 +264,8 @@ class ValidateStage:
     async def process(self, event: Event) -> NormalizedEvent | None:
         """Return the event if valid (or ``on_failure: warn``), else ``None``."""
         assert isinstance(event, NormalizedEvent)
-        if event.source_type == _UNKNOWN or "class_uid" not in event.ocsf:
-            return event  # pass-through / non-OCSF records are not validated
+        if _is_unmapped(event.source_type) or "class_uid" not in event.ocsf:
+            return event  # pass-through / template-only / non-OCSF records are not validated
 
         result = self._validator.validate(event.ocsf)
         if result.valid:
@@ -238,6 +299,39 @@ class ValidateStage:
             },
         )
         return event
+
+
+def _is_unmapped(source_type: str) -> bool:
+    """Whether ``source_type`` is the legacy ``"unknown"`` or a ``"unknown:<id>"`` skeleton."""
+    return source_type == _UNKNOWN or source_type.startswith(_TEMPLATE_ONLY_PREFIX)
+
+
+def _line_for_mining(event: ParsedEvent) -> str:
+    """Text whose shape to mine: the message body, with any syslog header removed.
+
+    Mining the bare message (not the ``<PRI>timestamp host tag`` envelope) keeps
+    the learned template about what the *device* said, not how it was framed —
+    the envelope is already structured on ``event.envelope`` and would only add
+    per-line noise (host, timestamp) to every template.
+    """
+    text = event.raw.decode("utf-8", errors="replace")
+    header_raw = event.envelope.get("header_raw")
+    if isinstance(header_raw, str) and header_raw and text.startswith(header_raw):
+        return text[len(header_raw) :]
+    return text
+
+
+def _infer_time_ns(event: ParsedEvent) -> int:
+    """OCSF ``time`` for a template-only record: the syslog envelope's, else ingest time."""
+    raw_ts = event.envelope.get("timestamp")
+    if isinstance(raw_ts, str) and raw_ts:
+        try:
+            return parse_timestamp(raw_ts)
+        except (ParseError, ValueError, TypeError):
+            _log.debug(
+                "template-only: unparseable envelope timestamp %r; using ingest time", raw_ts
+            )
+    return event.ingest_time_ns
 
 
 def _raw_stub(event: NormalizedEvent) -> RawEvent:
