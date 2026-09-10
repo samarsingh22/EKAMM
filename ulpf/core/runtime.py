@@ -47,6 +47,7 @@ from ulpf.ingest.syslog_tls import SyslogTlsListener
 from ulpf.ingest.syslog_udp import SyslogUdpListener
 from ulpf.integrity.signing import Signer
 from ulpf.integrity.stage import IntegrityStage
+from ulpf.ml.jobs import AnomalyScoringLoop
 from ulpf.normalize.stage import NormalizeStage, ValidateStage
 from ulpf.parse.coordinator import ParseCoordinator
 from ulpf.parse.dsl.loader import SourceRegistry
@@ -141,6 +142,8 @@ class Runtime:
         self._tailer: FileTailer | None = None
         self._http: _NoSignalServer | None = None
         self._bg: list[asyncio.Task[None]] = []
+        # background anomaly scoring (no-op unless settings.ml.scoring_enabled)
+        self._anomaly_loop = AnomalyScoringLoop(settings)
 
     @property
     def pipeline(self) -> Pipeline:
@@ -238,6 +241,7 @@ class Runtime:
                 asyncio.create_task(self._tailer.watch(list(ingest.file_tail_paths), submit))
             )
         await self._start_http(submit)
+        self._anomaly_loop.start()
 
     async def _start_http(self, submit: _Submit) -> None:
         """Launch the embedded uvicorn serving the HTTP intake app."""
@@ -259,6 +263,7 @@ class Runtime:
 
     async def stop(self) -> None:
         """Stop listeners (letting their in-flight events land), then the pipeline."""
+        await self._anomaly_loop.stop()
         await self._udp.stop()
         await self._tcp.stop()
         if self._tls is not None:

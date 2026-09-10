@@ -110,6 +110,31 @@ class PipelineSettings(BaseModel):
     batch_size: int = 500
 
 
+class MlSettings(BaseModel):
+    """Anomaly-detection model location, the anomalies lake, and the scoring loop.
+
+    ``model_path`` is a single joblib file (see :mod:`ulpf.ml.anomaly`).
+    ``anomalies_path`` is a third Parquet tier — Hive-partitioned ``date=`` by
+    the event's own time, like silver — holding per-event scores and top-3
+    explanations, joinable back to silver/bronze/the signed ledger by
+    ``event_uid``. ``scoring_enabled`` turns on a background task
+    (:class:`~ulpf.ml.jobs.AnomalyScoringLoop`, owned by the runtime) that
+    re-scores the last ``scoring_window_minutes`` every
+    ``scoring_interval_seconds``. ``drift_state_path`` persists the EWMA
+    template-rate baseline between ``GET /api/v1/anomalies/drift`` calls.
+    """
+
+    model_path: Path = _RUNTIME_DIR / "models" / "anomaly.joblib"
+    anomalies_path: Path = _RUNTIME_DIR / "anomalies"
+    drift_state_path: Path = _RUNTIME_DIR / "state" / "drift_baseline.json"
+    contamination: float | str = 0.02
+    scoring_enabled: bool = False
+    scoring_interval_seconds: float = 60.0
+    scoring_window_minutes: float = 5.0
+    drift_window_minutes: float = 5.0
+    drift_z_threshold: float = 3.0
+
+
 class TlsSettings(BaseModel):
     """TLS material for the RFC 5425 syslog-over-TLS listener (port 6514)."""
 
@@ -223,6 +248,7 @@ class Settings(BaseSettings):
     integrity: IntegritySettings = Field(default_factory=IntegritySettings)
     enrich: EnrichSettings = Field(default_factory=EnrichSettings)
     pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
+    ml: MlSettings = Field(default_factory=MlSettings)
     api: ApiSettings = Field(default_factory=ApiSettings)
     clickhouse: ClickHouseSettings = Field(default_factory=ClickHouseSettings)
     opensearch: OpenSearchSettings = Field(default_factory=OpenSearchSettings)

@@ -422,3 +422,89 @@ export interface ListenerStatus {
   events_received: number;
   bytes_received: number;
 }
+
+// ---------------------------------------------------------------------------
+// anomalies.py
+
+/** One feature's contribution to an anomaly score — its value vs. the training distribution. */
+export interface AnomalyExplanation {
+  feature: string;
+  value: number;
+  percentile: number;
+  direction: "high" | "low" | string;
+  training_median: number;
+  note: string;
+}
+
+/** One scored event from `GET /anomalies/`. */
+export interface AnomalyRow {
+  event_uid: string;
+  src_ip: string | null;
+  event_time_ns: number | null;
+  source_type: string | null;
+  anomaly_score: number;
+  is_anomaly: boolean;
+  scored_at_ns: number | null;
+  model_trained_at: string | null;
+  explanation: AnomalyExplanation[];
+}
+
+export interface AnomalyListParams {
+  limit?: number;
+  min_score?: number;
+  include_normal?: boolean;
+}
+
+export interface AnomalyTimelinePoint {
+  bucket_ns: number;
+  scored: number;
+  anomalies: number;
+  max_score: number | null;
+  mean_score: number | null;
+}
+
+export interface AnomalyTimeline {
+  window_seconds: number;
+  bucket_seconds: number;
+  points: AnomalyTimelinePoint[];
+}
+
+/** One template-rate drift signal from `GET /anomalies/drift` (EWMA baseline vs. current window). */
+export interface TemplateDriftSignal {
+  template_id: string;
+  source_id: string;
+  template: string;
+  baseline_rate: number;
+  current_rate: number;
+  z_score: number;
+  direction: "spike" | "drop";
+  observed: number;
+  expected: number;
+  window_minutes: number;
+  sample_lines: string[];
+}
+
+/** `GET /anomalies/model` — the trained detector's provenance card. */
+export interface ModelInfo {
+  trained: boolean;
+  trained_at: string | null;
+  n_samples: number | null;
+  n_features: number | null;
+  contamination: number | string | null;
+  feature_names: string[];
+}
+
+export interface TrainModelRequest {
+  date_from: string;
+  date_to: string;
+  contamination?: number;
+}
+
+export interface TrainModelResult {
+  model_path: string;
+  dates: string[];
+  n_samples: number;
+  n_features: number;
+  trained_at: string | null;
+  contamination: number | string;
+}

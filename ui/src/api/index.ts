@@ -7,3 +7,4 @@ export { templatesApi } from "./templates";
 export { integrityApi } from "./integrity";
 export { dlqApi } from "./dlq";
 export { ingestApi } from "./ingest";
+export { anomaliesApi } from "./anomalies";

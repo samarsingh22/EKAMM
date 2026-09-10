@@ -45,6 +45,9 @@ Feature routers mount under ``/api/v1``:
   dead letters.
 * :func:`~ulpf.api.routes.ingest.build_ingest_router` — inject sample lines
   or replay a file straight into the live pipeline; listener status.
+* :func:`~ulpf.api.routes.anomalies.build_anomalies_router` — anomaly-detection
+  results with per-alert explanations, the score-over-time chart, template
+  drift, and a training trigger.
 
 More are added the same way as they are built.
 
@@ -74,6 +77,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ulpf import __version__ as _FALLBACK_VERSION
+from ulpf.api.routes.anomalies import build_anomalies_router
 from ulpf.api.routes.dlq import build_dlq_router
 from ulpf.api.routes.events import build_events_router
 from ulpf.api.routes.ingest import build_ingest_router
@@ -159,6 +163,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(build_integrity_router(settings), prefix=_API_PREFIX)
     app.include_router(build_dlq_router(settings), prefix=_API_PREFIX)
     app.include_router(build_ingest_router(settings), prefix=_API_PREFIX)
+    app.include_router(build_anomalies_router(settings), prefix=_API_PREFIX)
 
     _mount_dashboard(app)  # registered last so its SPA catch-all never shadows the API
 

@@ -7,6 +7,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef } from "react";
 
+import { anomaliesApi } from "./anomalies";
 import { dlqApi } from "./dlq";
 import { eventsApi } from "./events";
 import { ingestApi } from "./ingest";
@@ -15,10 +16,12 @@ import { sourcesApi } from "./sources";
 import { suggestApi } from "./suggest";
 import { templatesApi } from "./templates";
 import type {
+  AnomalyListParams,
   DlqListParams,
   EventListParams,
   GenerateSourceRequest,
   ReplayRequest,
+  TrainModelRequest,
 } from "./types";
 
 export const LIVE_REFETCH_MS = 2_000;
@@ -57,6 +60,13 @@ export const queryKeys = {
   ingest: {
     listeners: () => ["ingest", "listeners"] as const,
     replayProgress: (taskId: string) => ["ingest", "replay", taskId] as const,
+  },
+  anomalies: {
+    list: (params: AnomalyListParams) => ["anomalies", "list", params] as const,
+    timeline: (window: string, bucket: string) => ["anomalies", "timeline", window, bucket] as const,
+    drift: (windowMinutes: number, zThreshold: number) =>
+      ["anomalies", "drift", windowMinutes, zThreshold] as const,
+    model: () => ["anomalies", "model"] as const,
   },
 };
 
@@ -376,5 +386,51 @@ export function useReplayProgress(taskId: string | undefined, live = true) {
     queryFn: () => ingestApi.replayProgress(taskId as string),
     enabled: Boolean(taskId),
     refetchInterval: live ? LIVE_REFETCH_MS : false,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// anomalies.py
+
+export function useAnomaliesList(params: AnomalyListParams = {}, live = true) {
+  return useQuery({
+    queryKey: queryKeys.anomalies.list(params),
+    queryFn: () => anomaliesApi.list(params),
+    refetchInterval: live ? LIVE_REFETCH_MS : false,
+  });
+}
+
+export function useAnomalyTimeline(window = "1h", bucket = "1m", live = true) {
+  return useQuery({
+    queryKey: queryKeys.anomalies.timeline(window, bucket),
+    queryFn: () => anomaliesApi.timeline(window, bucket),
+    refetchInterval: live ? LIVE_REFETCH_MS : false,
+  });
+}
+
+export function useAnomalyDrift(windowMinutes = 5, zThreshold = 3, live = true) {
+  return useQuery({
+    queryKey: queryKeys.anomalies.drift(windowMinutes, zThreshold),
+    queryFn: () => anomaliesApi.drift(windowMinutes, zThreshold),
+    refetchInterval: live ? LIVE_REFETCH_MS : false,
+  });
+}
+
+export function useAnomalyModel(live = true) {
+  return useQuery({
+    queryKey: queryKeys.anomalies.model(),
+    queryFn: () => anomaliesApi.model(),
+    refetchInterval: live ? LIVE_REFETCH_MS : false,
+  });
+}
+
+/** `POST /anomalies/train` — retrains the model over a date range; invalidates every anomalies query. */
+export function useTrainModel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: TrainModelRequest) => anomaliesApi.train(body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["anomalies"] });
+    },
   });
 }
