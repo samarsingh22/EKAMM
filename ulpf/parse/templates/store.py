@@ -47,6 +47,7 @@ from ulpf.core.metrics import TEMPLATE_EVENTS, TEMPLATES_TOTAL
 
 _STATE_FILENAME = "templates.json"
 _MAX_SAMPLE_LINES = 5
+_MAX_RECENT_TIMESTAMPS = 500  # bounded ring buffer for GET /drift's rate computation
 _MASK_TOKEN_RE = re.compile(r"<([A-Z_]+)>")
 
 OrderBy = Literal["count", "first_seen_ns", "last_seen_ns", "template_id"]
@@ -65,6 +66,12 @@ class TemplateRecord:
     count: int = 0
     sample_lines: list[str] = field(default_factory=list)
     suggested_fields: list[str] = field(default_factory=list)
+    # bounded, most-recent-first-seen-order occurrence timestamps - not part of
+    # the "public" template shape (list_templates()/get_samples() callers never
+    # needed it before), but real per-occurrence timing is exactly what
+    # GET /api/v1/templates/drift needs to tell a current-window rate from a
+    # baseline one; capped so a hot template cannot grow this file unbounded.
+    recent_ns: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -80,6 +87,7 @@ class TemplateRecord:
             count=int(data.get("count", 0)),
             sample_lines=list(data.get("sample_lines", [])),
             suggested_fields=list(data.get("suggested_fields", [])),
+            recent_ns=list(data.get("recent_ns", [])),
         )
 
 
@@ -149,6 +157,7 @@ class TemplateStore:
                     count=1,
                     sample_lines=[raw_line],
                     suggested_fields=_suggested_fields(template),
+                    recent_ns=[now],
                 )
                 self._records[key] = record
                 is_new = True
@@ -159,6 +168,9 @@ class TemplateStore:
                 if len(existing.sample_lines) < _MAX_SAMPLE_LINES:
                     existing.sample_lines.append(raw_line)
                 existing.suggested_fields = _suggested_fields(template)
+                existing.recent_ns.append(now)
+                if len(existing.recent_ns) > _MAX_RECENT_TIMESTAMPS:
+                    del existing.recent_ns[:-_MAX_RECENT_TIMESTAMPS]
                 record = existing
                 is_new = False
             self._save()

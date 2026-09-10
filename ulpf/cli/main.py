@@ -12,6 +12,8 @@ Commands:
 * ``ulpf reprocess``      — replay bronze evidence through the current parser.
 * ``ulpf dlq …``          — inspect and recover from the dead-letter queue.
 * ``ulpf suggest-parser`` — draft a source YAML from unmapped sample lines.
+* ``ulpf serve``          — start the management/query API (and, via its
+  lifespan, everything ``ulpf run`` starts too).
 """
 
 from __future__ import annotations
@@ -24,9 +26,11 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
 import typer
+import uvicorn
 import yaml
 
 from ulpf import __version__ as _FALLBACK_VERSION
+from ulpf.api.app import create_app
 from ulpf.cli.compact import compact as _compact_command
 from ulpf.cli.dlq import dlq_app
 from ulpf.cli.inspect import inspect as _inspect_command
@@ -118,6 +122,27 @@ def _print_banner(runtime: Runtime) -> None:
         typer.echo("  events are being STORED but NOT SIGNED. To fix, run:")
         typer.echo("    ulpf keys generate --set-config")
         typer.echo("")
+
+
+@app.command()
+def serve(
+    host: str | None = typer.Option(None, "--host", help="Override api.host from settings."),
+    port: int | None = typer.Option(None, "--port", help="Override api.port from settings."),
+) -> None:
+    """Start the management/query API on ``api.host``:``api.port``.
+
+    Its lifespan (:func:`ulpf.api.app.create_app`) starts the pipeline, every
+    listener, and every background task the same way ``ulpf run`` does, and
+    stops them cleanly on shutdown — this is the one command that brings up
+    the whole system: ingest, processing, and the API together.
+    """
+    settings = get_settings()
+    configure_logging("INFO")
+    _check_python_version()
+    bind_host = host or settings.api.host
+    bind_port = port or settings.api.port
+    typer.echo(f"ULPF management API on http://{bind_host}:{bind_port}")
+    uvicorn.run(create_app(settings), host=bind_host, port=bind_port, log_level="warning")
 
 
 @config_app.command("show")

@@ -1,4 +1,5 @@
-.PHONY: install dev test lint format format-check check typecheck run clean up down logs ps
+.PHONY: install dev test lint format format-check check typecheck run clean up down logs ps \
+	ui-install ui-dev ui-build
 
 COMPOSE ?= docker compose
 
@@ -52,3 +53,14 @@ logs:
 
 ps:
 	$(COMPOSE) ps
+
+# Dashboard (ui/) - Vite + React + TypeScript + Tailwind, talks to `ulpf serve`
+# (default :8080) via /api, proxied in dev by vite.config.ts.
+ui-install:
+	cd ui && npm install
+
+ui-dev:
+	cd ui && npm run dev
+
+ui-build:
+	cd ui && npm run build

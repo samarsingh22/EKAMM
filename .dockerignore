@@ -1,0 +1,26 @@
+# keep the build context small and reproducible
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+htmlcov
+.coverage
+coverage.xml
+*.egg-info
+build
+dist
+
+ui/node_modules
+ui/dist
+ui/*.tsbuildinfo
+
+data/runtime
+bench
+tests
+docs
+deploy/keys/*.pem
+CLAUDE.md
+.claude

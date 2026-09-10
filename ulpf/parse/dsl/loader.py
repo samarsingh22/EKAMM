@@ -89,6 +89,7 @@ class SourceRegistry:
         self._observer: Observer | None = None
         self._reload_count = 0
         self._last_reload_time: float | None = None
+        self._load_errors: dict[str, str] = {}  # file path -> most recent error
 
     # -- accessors -----------------------------------------------------
 
@@ -102,6 +103,16 @@ class SourceRegistry:
         """Unix time of the last (re)load, or ``None`` if never loaded."""
         return self._last_reload_time
 
+    def load_errors(self) -> list[dict[str, str]]:
+        """Every file currently rejected, as ``{"path": ..., "error": ...}``.
+
+        Cleared per-file the moment that file loads cleanly again (on the next
+        :meth:`load_all` or hot-reload pass) — this is *current* breakage, not
+        a historical log.
+        """
+        with self._lock:
+            return [{"path": path, "error": error} for path, error in self._load_errors.items()]
+
     def definitions(self) -> list[SourceDefinition]:
         """Every loaded definition, ordered by ``priority`` then ``name``."""
         return sorted(self._definitions.values(), key=lambda d: (d.priority, d.name))
@@ -110,6 +121,18 @@ class SourceRegistry:
         """Return the definition registered as ``name``, if any."""
         return self._definitions.get(name)
 
+    def path_for(self, name: str) -> Path | None:
+        """The file a loaded definition named ``name`` was actually read from, if any.
+
+        The filename need not equal ``name`` (nothing enforces that convention),
+        so this is the authoritative lookup — not ``sources_dir / f"{name}.yaml"``.
+        """
+        with self._lock:
+            for path, definition_name in self._paths.items():
+                if definition_name == name:
+                    return Path(path)
+        return None
+
     # -- loading -----------------------------------------------------
 
     def load_all(self, directory: Path | str) -> None:
@@ -117,30 +140,34 @@ class SourceRegistry:
         self._dir = Path(directory)
         loaded: dict[str, SourceDefinition] = {}
         paths: dict[str, str] = {}
+        errors: dict[str, str] = {}
         for path in sorted(self._dir.glob("*.yaml")):
-            definition = self._read_and_validate(path)
+            definition, error = self._read_and_validate(path)
             if definition is not None:
                 loaded[definition.name] = definition
                 paths[str(path)] = definition.name
+            else:
+                errors[str(path)] = error or "unknown error"
         with self._lock:
             self._definitions = loaded
             self._paths = paths
+            self._load_errors = errors
             self._bump_reload()
         _log.info("loaded source definitions", extra={"count": len(loaded)})
 
-    def _read_and_validate(self, path: Path) -> SourceDefinition | None:
-        """Parse + validate one file; log and return ``None`` on any failure."""
+    def _read_and_validate(self, path: Path) -> tuple[SourceDefinition | None, str | None]:
+        """Parse + validate one file; log and return ``(None, error)`` on any failure."""
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("top-level YAML is not a mapping")
-            return load_source_definition(data)
+            return load_source_definition(data), None
         except (OSError, yaml.YAMLError, ValidationError, ValueError) as exc:
             _log.error(
                 "source definition rejected; keeping previous version",
                 extra={"path": str(path), "error": str(exc)},
             )
-            return None
+            return None, str(exc)
 
     # -- matching -----------------------------------------------------
 
@@ -174,11 +201,21 @@ class SourceRegistry:
             self._observer.join(timeout=5)
             self._observer = None
 
-    def _on_file_changed(self, path: Path) -> None:
-        """Handle a created/modified YAML file: validate, then atomically swap in."""
-        definition = self._read_and_validate(path)
+    def reload_path(self, path: Path) -> str | None:
+        """Validate + atomically swap in one file's definition; return any error.
+
+        This is the single-file half of :meth:`load_all` — the watchdog handler
+        calls it on every create/modify event, and callers that just wrote a
+        file themselves (e.g. the ``PUT /api/v1/sources/{name}`` route) call it
+        directly for an immediate, synchronous reload rather than waiting on
+        the watcher. A broken file leaves the live registry untouched and its
+        error recorded in :meth:`load_errors`.
+        """
+        definition, error = self._read_and_validate(Path(path))
         if definition is None:
-            return  # broken file — the live registry is left untouched
+            with self._lock:
+                self._load_errors[str(path)] = error or "unknown error"
+            return error
         with self._lock:
             updated = dict(self._definitions)
             previous = self._paths.get(str(path))
@@ -187,19 +224,23 @@ class SourceRegistry:
             updated[definition.name] = definition
             self._definitions = updated
             self._paths[str(path)] = definition.name
+            self._load_errors.pop(str(path), None)
             self._bump_reload()
-        _log.info("source definition reloaded", extra={"name": definition.name})
+        # "name" collides with LogRecord's own reserved attribute - "source_name" avoids it
+        _log.info("source definition reloaded", extra={"source_name": definition.name})
+        return None
 
-    def _on_file_deleted(self, path: Path) -> None:
-        """Handle a removed YAML file: drop its definition if it was loaded."""
+    def forget_path(self, path: Path) -> None:
+        """Drop the definition (or stale error) previously loaded from ``path``, if any."""
         with self._lock:
+            self._load_errors.pop(str(path), None)
             name = self._paths.pop(str(path), None)
             if name and name in self._definitions:
                 updated = dict(self._definitions)
                 updated.pop(name, None)
                 self._definitions = updated
                 self._bump_reload()
-                _log.info("source definition removed", extra={"name": name})
+                _log.info("source definition removed", extra={"source_name": name})
 
     def _bump_reload(self) -> None:
         """Record that the registry contents changed (call under ``self._lock``)."""
@@ -229,7 +270,7 @@ class _ReloadHandler(FileSystemEventHandler):
     def on_deleted(self, event: FileSystemEvent) -> None:
         """A file was removed."""
         if not event.is_directory and str(event.src_path).endswith(".yaml"):
-            self._registry._on_file_deleted(Path(event.src_path))
+            self._registry.forget_path(Path(event.src_path))
 
     def _changed(self, event: FileSystemEvent, raw_path: object) -> None:
         """Forward a create/modify/move to the registry if it's a YAML file."""
@@ -237,4 +278,4 @@ class _ReloadHandler(FileSystemEventHandler):
             return
         path = Path(str(raw_path))
         if path.suffix == ".yaml":
-            self._registry._on_file_changed(path)
+            self._registry.reload_path(path)

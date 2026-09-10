@@ -51,6 +51,7 @@ def test_record_creates_a_row_with_the_full_schema(tmp_path: Path) -> None:
     assert rec.count == 1
     assert rec.sample_lines == ["connect from 10.0.0.1:22"]
     assert rec.suggested_fields == ["IP", "PORT"]
+    assert rec.recent_ns == [_BASE_NS]
 
     (row,) = store.list_templates()
     assert set(row) == {
@@ -62,6 +63,7 @@ def test_record_creates_a_row_with_the_full_schema(tmp_path: Path) -> None:
         "count",
         "sample_lines",
         "suggested_fields",
+        "recent_ns",
     }
 
 
@@ -86,6 +88,35 @@ def test_sample_lines_are_capped_at_five(tmp_path: Path) -> None:
     (row,) = store.list_templates()
     assert row["count"] == 9
     assert row["sample_lines"] == ["t 0", "t 1", "t 2", "t 3", "t 4"]
+
+
+def test_recent_ns_accumulates_one_timestamp_per_occurrence(tmp_path: Path) -> None:
+    clock = _Clock()
+    store = _store(tmp_path, clock)
+    for _ in range(5):
+        store.record(1, "t <NUM>", "fw1", "t x")
+        clock.advance()
+
+    (row,) = store.list_templates()
+    assert row["recent_ns"] == [_BASE_NS + i * 1_000_000_000 for i in range(5)]
+
+
+def test_recent_ns_is_capped_and_keeps_only_the_most_recent(tmp_path: Path) -> None:
+    from ulpf.parse.templates.store import _MAX_RECENT_TIMESTAMPS
+
+    clock = _Clock()
+    store = _store(tmp_path, clock)
+    total = _MAX_RECENT_TIMESTAMPS + 50
+    for _ in range(total):
+        store.record(1, "t <NUM>", "fw1", "t x")
+        clock.advance()
+
+    (row,) = store.list_templates()
+    assert row["count"] == total
+    assert len(row["recent_ns"]) == _MAX_RECENT_TIMESTAMPS
+    # the earliest 50 occurrences fell off; the tail is the most recent ones
+    assert row["recent_ns"][0] == _BASE_NS + 50 * 1_000_000_000
+    assert row["recent_ns"][-1] == _BASE_NS + (total - 1) * 1_000_000_000
 
 
 def test_same_template_id_from_two_sources_are_distinct_rows(tmp_path: Path) -> None:

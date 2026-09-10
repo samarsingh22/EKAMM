@@ -121,10 +121,14 @@ class TlsSettings(BaseModel):
 
 
 class ApiSettings(BaseModel):
-    """FastAPI bind address."""
+    """FastAPI bind address for the management/query API (``ulpf serve``)."""
 
     host: str = "0.0.0.0"
     port: int = 8080
+    # the Vite dev server's default origin(s); override for a deployed UI
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
+    )
 
 
 class ClickHouseSettings(BaseModel):

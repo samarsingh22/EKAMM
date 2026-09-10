@@ -29,6 +29,7 @@ import contextlib
 import logging
 import signal
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 import uvicorn
 
@@ -147,6 +148,11 @@ class Runtime:
         return self._pipeline
 
     @property
+    def sources(self) -> SourceRegistry:
+        """The live, hot-reloadable source registry (for the ``/api/v1/sources`` route)."""
+        return self._sources
+
+    @property
     def udp_port(self) -> int:
         """Bound UDP port (useful when configured as 0)."""
         return int(self._udp.sockname[1])
@@ -170,6 +176,40 @@ class Runtime:
     def integrity_off_reason(self) -> str | None:
         """A one-line reason the integrity ledger is OFF, or ``None`` when it is active."""
         return self._integrity_off_reason
+
+    @property
+    def sink_names(self) -> list[str]:
+        """Names of every registered sink, in registration order — surfaced on ``/health``."""
+        return self._sinks.sink_names
+
+    @property
+    def required_sink_names(self) -> list[str]:
+        """Names of the sinks whose failure dead-letters an event."""
+        return self._sinks.required_sink_names
+
+    @property
+    def sources_loaded(self) -> int:
+        """How many source definitions are currently loaded — surfaced on ``/health``."""
+        return len(self._sources.definitions())
+
+    @property
+    def listener_descriptors(self) -> list[dict[str, Any]]:
+        """Every listener this runtime binds — ``{name, protocol, port}``.
+
+        The single source of truth for both ``GET /health`` (management API)
+        and ``GET /api/v1/ingest/listeners``, so the two never drift apart.
+        ``protocol`` doubles as the ``transport`` label
+        :mod:`ulpf.core.metrics`'s ``ulpf_events_received_total`` /
+        ``ulpf_bytes_received_total`` counters use.
+        """
+        listeners = [
+            {"name": "syslog-udp", "protocol": "udp", "port": self.udp_port},
+            {"name": "syslog-tcp", "protocol": "tcp", "port": self.tcp_port},
+            {"name": "http-intake", "protocol": "http", "port": self._settings.ingest.http_port},
+        ]
+        if self.tls_port is not None:
+            listeners.append({"name": "syslog-tls", "protocol": "tls", "port": self.tls_port})
+        return listeners
 
     def enricher_status(self) -> list[dict[str, object]]:
         """Per-enricher name / enabled / ready / detail — surfaced on ``/health``."""
