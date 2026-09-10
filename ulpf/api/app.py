@@ -17,8 +17,8 @@ manages a running ULPF instance talk to this app, never to the ingest one.
   server's origin) so the dashboard UI can call this API from a different
   origin during development.
 * **``GET /health``** — liveness + a snapshot of what is actually running:
-  uptime, version, listeners, sinks, enrichers, and how many source
-  definitions are loaded.
+  uptime, version, listeners, sinks, enrichers, how many source definitions
+  are loaded, and whether the signed integrity ledger is active.
 * **``GET /metrics``** — the same Prometheus registry every metric in
   :mod:`ulpf.core.metrics` reports into, in the standard text exposition
   format.
@@ -303,6 +303,10 @@ def _install_health_and_metrics(app: FastAPI) -> None:
             "sinks": _sinks_status(runtime),
             "enrichers": runtime.enricher_status(),
             "sources_loaded": runtime.sources_loaded,
+            "integrity": {
+                "active": runtime.integrity_active,
+                "off_reason": runtime.integrity_off_reason,
+            },
         }
 
     @app.get("/metrics", tags=["health"])

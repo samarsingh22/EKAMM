@@ -11,7 +11,7 @@ from ulpf.config.settings import IngestSettings, PipelineSettings, Settings, Sto
 from ulpf.core.errors import PipelineStoppedError
 from ulpf.core.metrics import snapshot
 from ulpf.core.models import RawEvent
-from ulpf.core.pipeline import NoOpStage, Pipeline, RawStoreStage
+from ulpf.core.pipeline import NoOpStage, Pipeline, RawStoreStage, Stage
 from ulpf.integrity.hashing import make_raw_event
 from ulpf.sinks.raw_store import RawStore
 
@@ -92,6 +92,39 @@ async def test_events_flow_through_stages_in_order(tmp_path: Path) -> None:
     assert [e.event_uid for e in a.seen] == [e.event_uid for e in events]
     assert [e.event_uid for e in b.seen] == [e.event_uid for e in events]
     assert snapshot()[key] - before == 3.0
+
+
+async def test_end_to_end_latency_observed_only_for_events_that_reach_the_sink(
+    tmp_path: Path,
+) -> None:
+    """ulpf_end_to_end_latency_seconds fires per fully-processed event, never for a drop/DLQ."""
+    count_key = "ulpf_end_to_end_latency_seconds_count"
+    sum_key = "ulpf_end_to_end_latency_seconds_sum"
+    before_count = snapshot().get(count_key, 0.0)
+    before_sum = snapshot().get(sum_key, 0.0)
+
+    pipeline = Pipeline(_settings(tmp_path), [_DropStage()])
+    pipeline.start()
+    await pipeline.submit(_raw(0))
+    await pipeline.queue.join()
+    await pipeline.stop()
+    assert snapshot()[count_key] == before_count  # dropped by _DropStage -> not observed
+
+    pipeline = Pipeline(_settings(tmp_path), [_FlakyStage()])
+    pipeline.start()
+    await pipeline.submit(_raw(1, b"bad"))
+    await pipeline.queue.join()
+    await pipeline.stop()
+    assert snapshot()[count_key] == before_count  # dead-lettered -> not observed
+
+    pipeline = Pipeline(_settings(tmp_path), [NoOpStage()])
+    pipeline.start()
+    await pipeline.submit(_raw(2))
+    await pipeline.queue.join()
+    await pipeline.stop()
+    after = snapshot()
+    assert after[count_key] == before_count + 1  # reached the end of the chain -> observed
+    assert after[sum_key] >= before_sum  # a real, non-negative duration was recorded
 
     await pipeline.stop()
 
@@ -186,3 +219,139 @@ async def test_stop_drains_inflight_events(tmp_path: Path) -> None:
     await pipeline.stop()  # must wait for all 12 to finish, not drop them
 
     assert len(downstream.seen) == 12
+
+
+# ---------------------------------------------------------------------------
+# horizontal scaling: stage_factory (per-worker parser/mapper state)
+# ---------------------------------------------------------------------------
+
+
+def test_pipeline_requires_exactly_one_of_stages_or_stage_factory(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        Pipeline(_settings(tmp_path))
+    with pytest.raises(ValueError, match="exactly one"):
+        Pipeline(_settings(tmp_path), [NoOpStage()], stage_factory=lambda: [NoOpStage()])
+
+
+def test_worker_buffers_without_a_producer_buffer_raises(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="buffer="):
+        Pipeline(_settings(tmp_path), [NoOpStage()], worker_buffers=[])
+
+
+async def test_stage_factory_builds_one_fresh_stage_instance_per_worker(tmp_path: Path) -> None:
+    built: set[int] = set()
+    seen: list[tuple[str, int]] = []
+
+    class _TaggingStage:
+        name = "tag"
+
+        def __init__(self) -> None:
+            self._id = id(self)
+            built.add(self._id)
+
+        async def process(self, event: RawEvent) -> RawEvent:
+            seen.append((event.event_uid, self._id))
+            return event
+
+    pipeline = Pipeline(_settings(tmp_path, workers=4), stage_factory=lambda: [_TaggingStage()])
+    pipeline.start()
+    events = [_raw(i) for i in range(40)]
+    for event in events:
+        await pipeline.submit(event)
+    await pipeline.queue.join()
+    await pipeline.stop()
+
+    assert len(built) == 4  # one worker -> one freshly-constructed stage each
+    used = {stage_id for _, stage_id in seen}
+    assert used <= built  # every event was handled by one of THIS pipeline's own instances
+    assert len(seen) == 40  # nothing lost or duplicated across the 4 independent instances
+
+
+async def test_flush_runs_once_per_shared_stage_even_when_every_worker_has_it(
+    tmp_path: Path,
+) -> None:
+    """A factory can deliberately still share one singleton (e.g. RawStoreStage) across workers."""
+
+    class _FlushCounter:
+        name = "flush_counter"
+
+        def __init__(self) -> None:
+            self.flush_calls = 0
+
+        async def process(self, event: RawEvent) -> RawEvent:
+            return event
+
+        def flush(self) -> None:
+            self.flush_calls += 1
+
+    shared = _FlushCounter()  # captured by the closure -> same object in every worker's list
+    pipeline = Pipeline(_settings(tmp_path, workers=4), stage_factory=lambda: [NoOpStage(), shared])
+    pipeline.start()
+    await pipeline.stop()
+
+    assert shared.flush_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# horizontal scaling: partition-aware mode (one buffer per worker)
+# ---------------------------------------------------------------------------
+
+
+class _FakeConsumeBuffer:
+    """A minimal stand-in for a per-worker `_Consumer` (e.g. one Kafka partition set)."""
+
+    def __init__(self, events: list[RawEvent]) -> None:
+        self._queue: asyncio.Queue[RawEvent] = asyncio.Queue()
+        for event in events:
+            self._queue.put_nowait(event)
+        self.acked: list[str] = []
+
+    async def get(self) -> RawEvent:
+        return await self._queue.get()
+
+    async def ack(self, event: RawEvent) -> None:
+        self.acked.append(event.event_uid)
+
+
+class _FakeProducerBuffer:
+    """A minimal stand-in for `submit()`'s producer-side handle (e.g. a Kafka producer)."""
+
+    def __init__(self) -> None:
+        self.published: list[RawEvent] = []
+
+    async def put(self, event: RawEvent) -> None:
+        self.published.append(event)
+
+
+async def test_partition_aware_mode_each_worker_only_consumes_its_own_buffer(
+    tmp_path: Path,
+) -> None:
+    per_worker_events = [[_raw(100 * w + i) for i in range(5)] for w in range(3)]
+    buffers = [_FakeConsumeBuffer(events) for events in per_worker_events]
+    producer = _FakeProducerBuffer()
+
+    built_stages: list[_RecordingStage] = []
+
+    def factory() -> list[Stage]:
+        stage = _RecordingStage()
+        built_stages.append(stage)
+        return [stage]
+
+    pipeline = Pipeline(
+        _settings(tmp_path), stage_factory=factory, buffer=producer, worker_buffers=buffers
+    )
+    pipeline.start()
+    await asyncio.sleep(0.1)  # let the 3 workers drain their (tiny, in-memory) buffers
+
+    # submit() in this mode publishes through `buffer`, not any worker's own buffer
+    extra = _raw(999)
+    await pipeline.submit(extra)
+    assert producer.published == [extra]
+
+    await pipeline.stop()  # cancels the 3 workers, now blocked on their empty buffers
+
+    assert len(built_stages) == 3  # one worker per entry in worker_buffers
+    for worker_events, stage, buf in zip(per_worker_events, built_stages, buffers, strict=True):
+        got = {e.event_uid for e in stage.seen}
+        assert got == {e.event_uid for e in worker_events}  # only ITS OWN buffer's events
+        assert sorted(buf.acked) == sorted(got)  # every one of them acked exactly once

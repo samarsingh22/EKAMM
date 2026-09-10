@@ -43,6 +43,16 @@ QUEUE_BACKPRESSURE_WAITS = Counter(
     "ulpf_queue_backpressure_waits_total",
     "Times a producer had to wait for intake-queue space (backpressure applied).",
 )
+BUFFER_PUBLISHED = Counter(
+    "ulpf_buffer_published_total",
+    "Raw events handed to the ingest buffer (producer side) - in_process queue or Kafka.",
+    ["backend"],
+)
+BUFFER_CONSUMED = Counter(
+    "ulpf_buffer_consumed_total",
+    "Raw events pulled from the ingest buffer (consumer side) - in_process queue or Kafka.",
+    ["backend"],
+)
 
 QUEUE_DEPTH = Gauge(
     "ulpf_queue_depth",
@@ -119,6 +129,8 @@ _ALL_METRICS = (
     EVENTS_NORMALIZED,
     DEAD_LETTER,
     QUEUE_BACKPRESSURE_WAITS,
+    BUFFER_PUBLISHED,
+    BUFFER_CONSUMED,
     QUEUE_DEPTH,
     ACTIVE_SOURCES,
     PARSE_SUCCESS_RATE,

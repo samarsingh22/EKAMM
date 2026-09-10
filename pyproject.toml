@@ -39,12 +39,20 @@ dependencies = [
 # Optional GeoIP enrichment. The GeoLite2 .mmdb data files are NOT bundled and
 # NOT redistributable — see deploy/data/README.md.
 geoip = ["maxminddb>=2.2"]
+# Optional Kafka ingest buffer (ulpf/ingest/buffer/kafka_buffer.py). Not needed
+# for the default settings.buffer.backend = "in_process".
+kafka = ["aiokafka>=0.10,<1"]
+# Optional: bench/replay.py's --server-pid peak-RSS sampling of the ULPF
+# server process. Not needed to run bench/replay.py without --server-pid.
+bench = ["psutil>=5.9"]
 dev = [
     "pytest",
     "pytest-asyncio",
     "pytest-cov",
     "hypothesis",
     "httpx",
+    "aiokafka>=0.10,<1",  # so the buffer tests can exercise KafkaProducerBuffer/KafkaConsumerBuffer
+    "psutil>=5.9",  # so the bench/replay.py tests can exercise --server-pid
     "ruff==0.16.5",  # pin exactly: keep in step with .pre-commit-config.yaml's `rev`
     "mypy",
     "pre-commit",

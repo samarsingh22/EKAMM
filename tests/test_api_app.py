@@ -12,6 +12,7 @@ from ulpf.api.app import create_app
 from ulpf.config.settings import (
     ApiSettings,
     IngestSettings,
+    IntegritySettings,
     ParseSettings,
     PipelineSettings,
     Settings,
@@ -34,6 +35,10 @@ def _settings(tmp_path: Path, **overrides: object) -> Settings:
         ingest=IngestSettings(syslog_udp_port=0, syslog_tcp_port=0, http_port=0),
         parse=ParseSettings(sources_dir=tmp_path / "sources"),
         pipeline=PipelineSettings(worker_count=1),
+        # explicit, not whatever configs/ulpf.yaml happens to pin locally (a
+        # dev box that has run `ulpf keys generate --set-config` would
+        # otherwise make integrity_active flip on/off per machine)
+        integrity=IntegritySettings(signing_key_path=None, public_key_path=None),
         **overrides,
     )
 
@@ -62,6 +67,8 @@ def test_health_returns_the_full_shape(client: TestClient) -> None:
     assert isinstance(body["sinks"], list) and body["sinks"]
     assert isinstance(body["enrichers"], list) and body["enrichers"]
     assert body["sources_loaded"] == 0
+    assert body["integrity"]["active"] is False  # no signing key configured in this fixture
+    assert isinstance(body["integrity"]["off_reason"], str) and body["integrity"]["off_reason"]
 
 
 def test_health_lists_the_real_listeners_and_sinks(client: TestClient) -> None:

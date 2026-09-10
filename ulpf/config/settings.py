@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 from pydantic_settings import (
@@ -108,6 +109,43 @@ class PipelineSettings(BaseModel):
 
     worker_count: int = 4
     batch_size: int = 500
+
+
+class BufferSettings(BaseModel):
+    """Selects and configures the hand-off between listeners and the pipeline.
+
+    ``backend="in_process"`` (the default) is a single bounded ``asyncio.Queue``
+    living inside this process — zero external services, matching ULPF's
+    air-gap-by-default posture (CLAUDE.md: "no network calls at runtime in the
+    hot path"). ``backend="kafka"`` durably persists every raw event to a Kafka
+    topic before the pipeline consumes it — see
+    :mod:`ulpf.ingest.buffer.kafka_buffer`'s module docstring for what that
+    buys (replay after a parser fix, several pipeline processes sharing one
+    consumer group) and what it costs (an external service, an extra hop).
+
+    The ``kafka_*`` fields are only read when ``backend == "kafka"``; they stay
+    inert (and ``aiokafka`` stays uninstalled, if the optional ``ulpf[kafka]``
+    extra was never added) otherwise.
+    """
+
+    backend: Literal["in_process", "kafka"] = "in_process"
+
+    # producer + consumer: where and what
+    kafka_bootstrap_servers: str = "localhost:9092"
+    kafka_topic: str = "ulpf.raw"
+    kafka_partitions: int = 6
+    kafka_replication_factor: int = 1
+
+    # producer tuning: how much to batch before a send, and how long to wait
+    # for a batch to fill (see kafka_buffer.py's docstring for the trade-off).
+    kafka_batch_size: int = 16_384  # bytes, aiokafka's `max_batch_size`
+    kafka_linger_ms: int = 20
+    kafka_acks: str = "all"  # "0" | "1" | "all" — "all" waits for every in-sync replica
+
+    # consumer: the group this process joins, and how it reads
+    kafka_consumer_group: str = "ulpf-pipeline"
+    kafka_max_poll_records: int = 500
+    kafka_auto_offset_reset: Literal["earliest", "latest"] = "earliest"
 
 
 class MlSettings(BaseModel):
@@ -248,6 +286,7 @@ class Settings(BaseSettings):
     integrity: IntegritySettings = Field(default_factory=IntegritySettings)
     enrich: EnrichSettings = Field(default_factory=EnrichSettings)
     pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
+    buffer: BufferSettings = Field(default_factory=BufferSettings)
     ml: MlSettings = Field(default_factory=MlSettings)
     api: ApiSettings = Field(default_factory=ApiSettings)
     clickhouse: ClickHouseSettings = Field(default_factory=ClickHouseSettings)

@@ -13,6 +13,30 @@ its per-enricher status is served on the intake app's ``GET /health``.
 normalized event out to Parquet (required) plus ClickHouse/OpenSearch/Splunk
 (optional, self-disabling) concurrently.
 
+HORIZONTAL SCALING (``settings.pipeline.worker_count`` / ``ulpf run --workers``)
+---------------------------------------------------------------------------------
+The pipeline is built with :class:`~ulpf.core.pipeline.Pipeline`'s
+``stage_factory`` — every worker gets its own freshly-built
+:class:`~ulpf.parse.coordinator.ParseCoordinator`, ``ParseStage``,
+``NormalizeStage``, ``EnrichStage`` and ``ValidateStage`` (no shared,
+in-flight-event-touching state between workers), while ``RawStoreStage``,
+``IntegrityStage`` and ``SinkManager`` are captured once and reused across
+every worker's list — they must stay single instances (an append-only bronze
+writer, one ordered Merkle batch, one sink buffer). ``SourceRegistry`` and the
+enrichment pipeline are shared too, deliberately: they are read-mostly,
+hot-reloaded *configuration*, not per-event processing state, and workers must
+all see the same hot-reload the instant it happens. See
+:mod:`ulpf.core.pipeline`'s own module docstring for the full reasoning.
+
+When ``settings.buffer.backend == "kafka"``, ``worker_count`` separate
+:class:`~ulpf.ingest.buffer.kafka_buffer.KafkaConsumerBuffer`\\ s are built —
+one per worker, all in the same consumer group, so Kafka's own partition
+rebalancing (not any custom logic here) gives each worker a disjoint set of
+partitions — plus one shared :class:`~ulpf.ingest.buffer.kafka_buffer.KafkaProducerBuffer`
+that every listener's :meth:`~ulpf.core.pipeline.Pipeline.submit` call
+publishes through. ``"in_process"`` (the default) needs none of this: the
+pipeline builds its own internal bounded queue.
+
 * **start**  — pipeline workers, then the syslog UDP/TCP listeners, the syslog
   TLS listener (only if ``tls.cert_path``/``key_path`` are set), a file tailer
   (only if ``ingest.file_tail_paths`` is non-empty), and the HTTP intake app on
@@ -29,13 +53,13 @@ import contextlib
 import logging
 import signal
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import uvicorn
 
 from ulpf.config.settings import Settings
 from ulpf.core.models import RawEvent
-from ulpf.core.pipeline import ParseStage, Pipeline, RawStoreStage
+from ulpf.core.pipeline import ParseStage, Pipeline, RawStoreStage, Stage
 from ulpf.enrich.factory import build_enrichers, describe_enrichers
 from ulpf.enrich.pipeline import EnrichmentPipeline
 from ulpf.enrich.stage import EnrichStage
@@ -53,6 +77,9 @@ from ulpf.parse.coordinator import ParseCoordinator
 from ulpf.parse.dsl.loader import SourceRegistry
 from ulpf.sinks.manager import SinkManager
 from ulpf.sinks.raw_store import RawStore
+
+if TYPE_CHECKING:  # pragma: no cover - only for type checkers; see the lazy import in __init__
+    from ulpf.ingest.buffer.kafka_buffer import KafkaConsumerBuffer, KafkaProducerBuffer
 
 _log = logging.getLogger(__name__)
 
@@ -110,7 +137,6 @@ class Runtime:
         """Build the pipeline and listener objects (nothing is bound yet)."""
         self._settings = settings
         self._raw_store = RawStore(settings)
-        self._coordinator = ParseCoordinator()
         self._sources = SourceRegistry()
         sources_dir = settings.parse.sources_dir
         sources_dir.mkdir(parents=True, exist_ok=True)
@@ -120,20 +146,46 @@ class Runtime:
         signer, self._integrity_off_reason = _load_signing_key(settings)
         self._integrity = IntegrityStage(settings, signer=signer)
         self._sinks = SinkManager.from_settings(settings)
-        self._pipeline = Pipeline(
-            settings,
-            [
-                RawStoreStage(self._raw_store),
+
+        # Captured once, reused by every worker's stage list below - these
+        # three must stay single instances (see the module docstring's
+        # HORIZONTAL SCALING section).
+        raw_store_stage = RawStoreStage(self._raw_store)
+
+        def build_worker_stages() -> list[Stage]:
+            """One worker's own parser/mapper chain, sharing only the singletons above."""
+            return [
+                raw_store_stage,
                 # integrity covers the RAW evidence, before parsing can alter it
                 self._integrity,
-                ParseStage(settings, self._coordinator),
+                ParseStage(settings, ParseCoordinator()),
                 NormalizeStage(settings, self._sources),
                 EnrichStage(settings, self._enrich),
                 ValidateStage(settings, self._sources),
                 # fan out to every enabled sink; DLQs iff a required sink fails
                 self._sinks,
-            ],
-        )
+            ]
+
+        self._kafka_producer: KafkaProducerBuffer | None = None
+        self._kafka_consumers: list[KafkaConsumerBuffer] = []
+        if settings.buffer.backend == "kafka":
+            # Lazy import: aiokafka is an optional extra, never required for
+            # the default "in_process" backend (see ulpf.ingest.buffer).
+            from ulpf.ingest.buffer.kafka_buffer import KafkaConsumerBuffer, KafkaProducerBuffer
+
+            self._kafka_producer = KafkaProducerBuffer(settings)
+            self._kafka_consumers = [
+                KafkaConsumerBuffer(settings) for _ in range(settings.pipeline.worker_count)
+            ]
+            self._pipeline = Pipeline(
+                settings,
+                stage_factory=build_worker_stages,
+                buffer=self._kafka_producer,
+                worker_buffers=self._kafka_consumers,
+            )
+        else:
+            self._pipeline = Pipeline(settings, stage_factory=build_worker_stages)
+
         self._udp = SyslogUdpListener(
             recv_buffer_bytes=settings.ingest.syslog_udp_recv_buffer_bytes
         )
@@ -227,6 +279,10 @@ class Runtime:
             if isinstance(enricher, ThreatIntelEnricher):
                 enricher.start()
         await self._sinks.start()  # network sinks self-disable here if unreachable
+        if self._kafka_producer is not None:
+            await self._kafka_producer.start()
+            for consumer in self._kafka_consumers:
+                await consumer.start()  # joins the shared consumer group; Kafka assigns partitions
         self._pipeline.start()
         await self._udp.start(_BIND_HOST, ingest.syslog_udp_port, submit)
         await self._tcp.start(_BIND_HOST, ingest.syslog_tcp_port, submit)
@@ -282,6 +338,10 @@ class Runtime:
                 enricher.stop()
         self._enrich.close()
         await self._pipeline.stop()
+        if self._kafka_producer is not None:
+            await self._kafka_producer.stop()
+            for consumer in self._kafka_consumers:
+                await consumer.stop()
 
     async def serve(self, on_started: _OnStarted | None = None) -> None:
         """Start everything, wait for SIGINT/SIGTERM (or cancellation), then stop."""

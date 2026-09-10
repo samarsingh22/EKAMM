@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from ulpf.config.settings import (
+    BufferSettings,
     IngestSettings,
     ParseSettings,
     PipelineSettings,
@@ -13,6 +16,7 @@ from ulpf.config.settings import (
     StorageSettings,
 )
 from ulpf.core.runtime import Runtime
+from ulpf.integrity.hashing import make_raw_event
 from ulpf.sinks.raw_store import RawStore
 
 
@@ -67,3 +71,50 @@ async def test_start_then_stop_is_clean_with_no_traffic(tmp_path: Path) -> None:
     await runtime.stop()
     # a second stop is a no-op, not an error
     await runtime.pipeline.stop()
+
+
+async def test_multiple_workers_process_traffic_correctly_end_to_end(tmp_path: Path) -> None:
+    """Each worker builds its own parser/mapper (stage_factory); submitted traffic still works.
+
+    Submits straight to ``runtime.pipeline`` (like ``POST /ingest/sample``
+    does) rather than over a real UDP socket: per CLAUDE.md, UDP is lossy
+    under an unpaced burst, and this test's job is to prove the multi-worker
+    *pipeline* wiring, not socket reliability (already covered elsewhere).
+    """
+    settings = _settings(tmp_path).model_copy(update={"pipeline": PipelineSettings(worker_count=4)})
+    runtime = Runtime(settings)
+    await runtime.start()
+    try:
+        for i in range(40):
+            event = make_raw_event(f"msg-{i}".encode(), source_id="test", transport="http")
+            await runtime.pipeline.submit(event)
+        await runtime.pipeline.queue.join()
+    finally:
+        await runtime.stop()
+
+    events = list(RawStore(settings).iter_all())
+    assert len(events) == 40
+    assert len({e.event_uid for e in events}) == 40  # nothing lost or duplicated
+
+
+def test_kafka_backend_wires_one_consumer_buffer_per_worker(tmp_path: Path) -> None:
+    """`settings.buffer.backend == "kafka"` builds N per-worker consumers (construction only)."""
+    pytest.importorskip("aiokafka")
+    settings = _settings(tmp_path).model_copy(
+        update={
+            "pipeline": PipelineSettings(worker_count=3),
+            "buffer": BufferSettings(backend="kafka", kafka_bootstrap_servers="127.0.0.1:1"),
+        }
+    )
+    runtime = Runtime(settings)
+    assert runtime._kafka_producer is not None
+    assert len(runtime._kafka_consumers) == 3
+    assert runtime.pipeline._worker_buffers is not None
+    assert len(runtime.pipeline._worker_buffers) == 3
+
+
+def test_in_process_backend_builds_no_kafka_objects(tmp_path: Path) -> None:
+    runtime = Runtime(_settings(tmp_path))
+    assert runtime._kafka_producer is None
+    assert runtime._kafka_consumers == []
+    assert runtime.pipeline._worker_buffers is None

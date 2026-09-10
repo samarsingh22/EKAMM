@@ -25,6 +25,12 @@ pytest-junit.xml
 # Project runtime data
 data/runtime/
 
+# Generated benchmark/demo logs (bench/generate.py) - can reach millions of
+# lines / hundreds of MB; never meant to be committed. .gitkeep stays tracked
+# so the directory itself still exists in a fresh checkout.
+data/samples/*
+!data/samples/.gitkeep
+
 # Node / frontend
 node_modules/
 

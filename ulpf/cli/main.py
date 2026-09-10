@@ -91,10 +91,32 @@ def version() -> None:
     typer.echo(f"ulpf {_resolve_version()}")
 
 
+def _with_worker_count(settings: Settings, workers: int | None) -> Settings:
+    """Override ``settings.pipeline.worker_count`` for this run, if ``--workers`` was given.
+
+    Horizontal scaling — see :mod:`ulpf.core.pipeline`'s HORIZONTAL SCALING
+    section: this is the number of independent worker tasks the pipeline
+    runs, each with its own parser/mapper state, each consuming its own
+    Kafka partitions when ``settings.buffer.backend == "kafka"``.
+    """
+    if workers is None:
+        return settings
+    return settings.model_copy(
+        update={"pipeline": settings.pipeline.model_copy(update={"worker_count": workers})}
+    )
+
+
 @app.command()
-def run() -> None:
+def run(
+    workers: int | None = typer.Option(
+        None,
+        "--workers",
+        min=1,
+        help="Override pipeline.worker_count — how many independent pipeline workers to run.",
+    ),
+) -> None:
     """Start all configured listeners and the processing pipeline."""
-    settings = get_settings()
+    settings = _with_worker_count(get_settings(), workers)
     configure_logging("INFO")
     _check_python_version()
     try:
@@ -131,6 +153,12 @@ def _print_banner(runtime: Runtime) -> None:
 def serve(
     host: str | None = typer.Option(None, "--host", help="Override api.host from settings."),
     port: int | None = typer.Option(None, "--port", help="Override api.port from settings."),
+    workers: int | None = typer.Option(
+        None,
+        "--workers",
+        min=1,
+        help="Override pipeline.worker_count — how many independent pipeline workers to run.",
+    ),
 ) -> None:
     """Start the management/query API on ``api.host``:``api.port``.
 
@@ -139,7 +167,7 @@ def serve(
     stops them cleanly on shutdown — this is the one command that brings up
     the whole system: ingest, processing, and the API together.
     """
-    settings = get_settings()
+    settings = _with_worker_count(get_settings(), workers)
     configure_logging("INFO")
     _check_python_version()
     bind_host = host or settings.api.host

@@ -78,6 +78,24 @@ def test_serve_host_and_port_flags_override_settings(
     assert fake_uvicorn["port"] == 1234
 
 
+def test_serve_workers_flag_overrides_pipeline_worker_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_uvicorn: dict
+) -> None:
+    settings = _settings(tmp_path)
+    settings.parse.sources_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(main_mod, "get_settings", lambda: settings)
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        main_mod, "create_app", lambda s: (captured.__setitem__("settings", s), object())[1]
+    )
+
+    result = runner.invoke(app, ["serve", "--workers", "8"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["settings"].pipeline.worker_count == 8
+
+
 def test_serve_passes_a_real_fastapi_app_to_uvicorn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_uvicorn: dict
 ) -> None:
