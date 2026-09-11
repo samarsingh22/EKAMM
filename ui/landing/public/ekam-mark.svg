@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 102" width="120" height="102">
+  <title>EKAM</title>
+  <!-- Dark face: the apex wedge plus the left leg, drawn as one path. -->
+  <path fill="#101d2e" d="M60 2 L83.7 42 L49.3 42 L15 100 L2 100 Z" />
+  <!-- Blue stratum -->
+  <path fill="#0b63f6" d="M47 46 L86 46 L96.7 64 L36.3 64 Z" />
+  <!-- Slate stratum, meeting the leg at the base -->
+  <path fill="#74899e" d="M32.8 70 L100.2 70 L118 100 L15 100 Z" />
+</svg>

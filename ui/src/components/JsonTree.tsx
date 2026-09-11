@@ -54,7 +54,7 @@ function Key({ fieldKey }: { fieldKey?: string }) {
   if (fieldKey === undefined) return null;
   return (
     <>
-      <span className="text-sky-300">"{fieldKey}"</span>
+      <span className="text-sky-700">"{fieldKey}"</span>
       <span className="text-text-faint">: </span>
     </>
   );
@@ -62,9 +62,9 @@ function Key({ fieldKey }: { fieldKey?: string }) {
 
 function Scalar({ value }: { value: unknown }) {
   if (value === null) return <span className="text-text-faint">null</span>;
-  if (typeof value === "string") return <span className="text-emerald-400">"{value}"</span>;
-  if (typeof value === "number") return <span className="text-amber-300">{value}</span>;
-  if (typeof value === "boolean") return <span className="text-violet-300">{String(value)}</span>;
+  if (typeof value === "string") return <span className="text-emerald-700">"{value}"</span>;
+  if (typeof value === "number") return <span className="text-amber-700">{value}</span>;
+  if (typeof value === "boolean") return <span className="text-violet-700">{String(value)}</span>;
   return <span className="text-text-muted">{String(value)}</span>;
 }
 

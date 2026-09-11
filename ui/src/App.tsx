@@ -13,7 +13,10 @@ export default function App() {
   return (
     <Shell>
       <Routes>
+        {/* `/console` is the Overview in dev, where `/` serves the landing page
+            (see vite.config.ts); `/` still works for the built dashboard. */}
         <Route path="/" element={<Overview />} />
+        <Route path="/console" element={<Overview />} />
         <Route path="/events" element={<Events />} />
         <Route path="/events/:eventUid" element={<Events />} />
         <Route path="/sources" element={<Sources />} />

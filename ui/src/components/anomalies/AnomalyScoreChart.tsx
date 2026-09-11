@@ -36,7 +36,7 @@ const TOOLTIP_STYLE = {
   labelStyle: { color: THEME.textMuted },
   itemStyle: { color: THEME.textMuted },
 };
-const RED = "#f87171";
+const RED = "#dc2626";
 
 interface Row {
   label: string;

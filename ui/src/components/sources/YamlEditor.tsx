@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { yaml as yamlLang } from "@codemirror/lang-yaml";
-import { oneDark } from "@codemirror/theme-one-dark";
 import { linter, lintGutter, forceLinting, type Diagnostic } from "@codemirror/lint";
 
 interface YamlEditorProps {
@@ -41,7 +40,7 @@ function buildDiagnostics(doc: string, errors: string[]): Diagnostic[] {
   });
 }
 
-/** A dark, syntax-highlighted YAML editor with inline lint markers driven by external validation errors. */
+/** A light, syntax-highlighted YAML editor with inline lint markers driven by external validation errors. */
 export default function YamlEditor({ value, onChange, errors }: YamlEditorProps) {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
   const errorsRef = useRef<string[]>(errors);
@@ -57,7 +56,6 @@ export default function YamlEditor({ value, onChange, errors }: YamlEditorProps)
   const extensions = useMemo(
     () => [
       yamlLang(),
-      oneDark,
       lintGutter(),
       linter((view) => buildDiagnostics(view.state.doc.toString(), errorsRef.current)),
     ],
@@ -70,7 +68,7 @@ export default function YamlEditor({ value, onChange, errors }: YamlEditorProps)
       value={value}
       onChange={onChange}
       height="100%"
-      theme={oneDark}
+      theme="light"
       extensions={extensions}
       basicSetup={{ foldGutter: true, autocompletion: false }}
       className="h-full overflow-hidden text-sm [&_.cm-editor]:h-full [&_.cm-scroller]:font-mono"

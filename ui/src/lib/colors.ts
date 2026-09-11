@@ -5,17 +5,17 @@
  * built from and around that accent, not a departure from it.
  */
 const PALETTE = [
-  "#22d3ee", // accent (cyan)
-  "#34d399", // emerald
-  "#818cf8", // indigo
-  "#fbbf24", // amber
-  "#f472b6", // pink
-  "#38bdf8", // sky
-  "#a78bfa", // violet
-  "#fb923c", // orange
-  "#2dd4bf", // teal
-  "#f87171", // red
-  "#a3e635", // lime
+  "#0891b2", // accent (cyan)
+  "#059669", // emerald
+  "#6366f1", // indigo
+  "#d97706", // amber
+  "#db2777", // pink
+  "#0284c7", // sky
+  "#7c3aed", // violet
+  "#ea580c", // orange
+  "#0d9488", // teal
+  "#dc2626", // red
+  "#65a30d", // lime
 ];
 
 /** A stable color for `key` (e.g. a `source_type`) — same key always maps to the same color. */

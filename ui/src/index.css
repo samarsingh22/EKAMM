@@ -4,7 +4,7 @@
 
 @layer base {
   html {
-    color-scheme: dark;
+    color-scheme: light;
   }
 
   body {
@@ -15,7 +15,7 @@
     @apply bg-accent/30 text-text;
   }
 
-  /* thin, dark scrollbars - the default light ones look broken on this theme */
+  /* thin scrollbars in the theme's own colors */
   * {
     scrollbar-color: theme("colors.border.DEFAULT") theme("colors.bg.panel");
     scrollbar-width: thin;

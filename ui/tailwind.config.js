@@ -5,36 +5,37 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Near-black SOC theme. One accent (cyan) carries every interactive/
+        // Light SOC theme. One accent (cyan) carries every interactive/
         // "live" signal; everything else stays a near-monochrome grayscale so
         // the accent (and semantic status colors) are the only things that
-        // pull the eye.
+        // pull the eye. Accent and status shades are dark enough to read as
+        // text on white.
         bg: {
-          DEFAULT: "#08090c", // page background
-          panel: "#101218", // cards / sidebar / topbar
-          elevated: "#181b23", // hovered rows, popovers
-          inset: "#05060a", // wells (code blocks, raw log preview)
+          DEFAULT: "#f8fafc", // page background
+          panel: "#ffffff", // cards / sidebar / topbar
+          elevated: "#eef2f7", // hovered rows, popovers
+          inset: "#f1f5f9", // wells (code blocks, raw log preview)
         },
         border: {
-          DEFAULT: "#22242e",
-          subtle: "#181a22",
+          DEFAULT: "#e2e8f0",
+          subtle: "#edf1f6",
         },
         text: {
-          DEFAULT: "#e6e7eb", // primary, high-contrast
-          muted: "#9498a6", // secondary
-          faint: "#5b5f6e", // tertiary / disabled
+          DEFAULT: "#0f172a", // primary, high-contrast
+          muted: "#475569", // secondary
+          faint: "#64748b", // tertiary / disabled
         },
         accent: {
-          DEFAULT: "#22d3ee",
-          dim: "#0e7490",
-          bg: "rgba(34, 211, 238, 0.1)",
+          DEFAULT: "#0e7490",
+          dim: "#155e75",
+          bg: "rgba(14, 116, 144, 0.1)",
         },
         // status colors (errors/warnings/ok) are semantic, not "the accent" -
         // kept intentionally separate per the single-accent brief.
         status: {
-          ok: "#34d399",
-          warn: "#fbbf24",
-          bad: "#f87171",
+          ok: "#047857",
+          warn: "#b45309",
+          bad: "#dc2626",
         },
       },
       keyframes: {
@@ -44,7 +45,7 @@ export default {
         },
         "flash-accent": {
           "0%, 100%": { backgroundColor: "transparent" },
-          "35%": { backgroundColor: "rgba(34, 211, 238, 0.35)" },
+          "35%": { backgroundColor: "rgba(14, 116, 144, 0.25)" },
         },
       },
       animation: {
